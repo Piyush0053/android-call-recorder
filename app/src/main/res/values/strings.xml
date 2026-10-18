@@ -1,0 +1,29 @@
+<resources>
+    <string name="app_name">Call Recorder</string>
+    <string name="tab_all">All Calls</string>
+    <string name="tab_known">Known Contacts</string>
+    <string name="tab_unknown">Unknown Numbers</string>
+    <string name="tab_favorites">Favorites</string>
+    
+    <string name="notification_channel_name">Call Recording Service</string>
+    <string name="notification_channel_desc">Active foreground service notification during call recording</string>
+    <string name="notification_recording_title">Recording Active Call</string>
+    <string name="notification_recording_text">Recording conversation with %1$s</string>
+    
+    <string name="search_hint">Search by contact name, number or notes...</string>
+    <string name="no_recordings_title">No Recordings Yet</string>
+    <string name="no_recordings_desc">When an incoming or outgoing call connects, it will be automatically recorded and displayed here.</string>
+    <string name="no_search_results">No recordings match your search criteria.</string>
+    
+    <string name="settings_title">Settings</string>
+    <string name="settings_auto_record">Automatic Call Recording</string>
+    <string name="settings_auto_record_desc">Automatically start recording when calls connect</string>
+    <string name="settings_record_unknown">Record Unknown Numbers</string>
+    <string name="settings_record_unknown_desc">Ensure conversations from unsaved numbers are captured</string>
+    <string name="settings_gain_boost">Audio Gain / Volume Boost</string>
+    <string name="settings_gain_boost_desc">Amplifies the caller voice from the earpiece/speaker</string>
+    <string name="settings_battery_title">Battery Optimization</string>
+    <string name="settings_battery_desc">Exempt app from OS battery killer to prevent dropped recordings</string>
+    <string name="settings_security_badge">Air-Gapped &amp; 100% Offline</string>
+    <string name="settings_security_desc">No internet permission requested. Your voice data never leaves this device.</string>
+</resources>
