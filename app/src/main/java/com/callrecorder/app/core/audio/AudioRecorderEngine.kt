@@ -7,6 +7,8 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.NoiseSuppressor
 import android.os.Build
 import android.util.Log
 import com.callrecorder.app.core.telephony.CallCompanionService
@@ -161,9 +163,14 @@ class AudioRecorderEngine(
         // Test sample rates: 44100 Hz first (universal AAC standard), fallback to 16000 Hz
         val sampleRatesToTry = intArrayOf(44100, 16000)
 
-        // Prioritize VOICE_COMMUNICATION for bi-directional call audio
+        // Prioritize VOICE_CALL for true bi-directional telephony audio (OEM-supported).
+        // Fall back progressively: VOICE_COMMUNICATION (VoIP-style with AEC), UNPROCESSED,
+        // VOICE_RECOGNITION, MIC, DEFAULT.
+        @Suppress("DEPRECATION")
         val audioSources = intArrayOf(
-            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+            MediaRecorder.AudioSource.VOICE_CALL,          // Raw uplink+downlink (OEM-specific)
+            MediaRecorder.AudioSource.VOICE_COMMUNICATION, // VoIP mic (speakerphone trick)
+            MediaRecorder.AudioSource.UNPROCESSED,         // Raw mic, no DSP pipeline (API 24+)
             MediaRecorder.AudioSource.VOICE_RECOGNITION,
             MediaRecorder.AudioSource.MIC,
             MediaRecorder.AudioSource.DEFAULT
@@ -206,6 +213,32 @@ class AudioRecorderEngine(
         if (record == null) {
             cleanupAudioRouting()
             throw IllegalStateException("Failed to initialize AudioRecord with any available audio source or sample rate")
+        }
+
+        // Disable AEC and NoiseSuppressor — they silently remove the remote-party voice that
+        // the speakerphone broadcasts into the room, making recordings appear silent or one-sided.
+        val sessionId = record.audioSessionId
+        try {
+            if (AcousticEchoCanceler.isAvailable()) {
+                val aec = AcousticEchoCanceler.create(sessionId)
+                if (aec != null) {
+                    aec.enabled = false
+                    Log.i(TAG, "AcousticEchoCanceler disabled on session $sessionId")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not disable AcousticEchoCanceler: ${e.message}")
+        }
+        try {
+            if (NoiseSuppressor.isAvailable()) {
+                val ns = NoiseSuppressor.create(sessionId)
+                if (ns != null) {
+                    ns.enabled = false
+                    Log.i(TAG, "NoiseSuppressor disabled on session $sessionId")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not disable NoiseSuppressor: ${e.message}")
         }
 
         var encoder: AudioEncoder? = null

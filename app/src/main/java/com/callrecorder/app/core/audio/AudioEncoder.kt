@@ -50,32 +50,61 @@ class AudioEncoder(
 
     /**
      * Feeds raw PCM bytes into the encoder and drains available encoded AAC packets into the muxer.
+     *
+     * Internally chunks [pcmData] into segments that fit the codec's actual input-buffer
+     * capacity so that a large pre-roll flush (potentially hundreds of KB) never causes a
+     * [java.nio.BufferOverflowException] at [java.nio.DirectByteBuffer.put].
      */
     @Synchronized
     fun encodePcm(pcmData: ByteArray, length: Int, isEndOfStream: Boolean = false) {
         val codec = mediaCodec ?: return
         val muxer = mediaMuxer ?: return
 
-        // Submit input buffer
-        val inputBufferIndex = codec.dequeueInputBuffer(10_000)
-        if (inputBufferIndex >= 0) {
-            val inputBuffer = codec.getInputBuffer(inputBufferIndex)
-            inputBuffer?.clear()
+        val bytesPerSample = 2 * channelCount
 
-            if (length > 0) {
-                inputBuffer?.put(pcmData, 0, length)
+        var offset = 0
+        while (offset < length) {
+            val inputBufferIndex = codec.dequeueInputBuffer(10_000)
+            if (inputBufferIndex < 0) {
+                // Codec not ready yet — drain output and retry next iteration
+                drainEncoder(codec, muxer, false)
+                continue
             }
 
-            val flags = if (isEndOfStream) MediaCodec.BUFFER_FLAG_END_OF_STREAM else 0
-            val bytesPerSample = 2 * channelCount
-            val durationUs = (length.toLong() * 1_000_000L) / (sampleRate * bytesPerSample)
+            val inputBuffer = codec.getInputBuffer(inputBufferIndex) ?: break
+            inputBuffer.clear()
 
-            codec.queueInputBuffer(inputBufferIndex, 0, length, presentationTimeUs, flags)
+            // Determine how many bytes this codec buffer can accept, aligned to sample frames
+            val bufCap = inputBuffer.capacity()
+            val remaining = length - offset
+            var chunkSize = minOf(remaining, bufCap)
+            // Align to a whole PCM frame boundary to avoid half-sample writes
+            chunkSize = (chunkSize / bytesPerSample) * bytesPerSample
+            if (chunkSize <= 0) break
+
+            inputBuffer.put(pcmData, offset, chunkSize)
+
+            val isLastChunk = (offset + chunkSize >= length)
+            val flags = if (isLastChunk && isEndOfStream) MediaCodec.BUFFER_FLAG_END_OF_STREAM else 0
+            val durationUs = (chunkSize.toLong() * 1_000_000L) / (sampleRate * bytesPerSample)
+
+            codec.queueInputBuffer(inputBufferIndex, 0, chunkSize, presentationTimeUs, flags)
             presentationTimeUs += durationUs
+            offset += chunkSize
+
+            drainEncoder(codec, muxer, isLastChunk && isEndOfStream)
         }
 
-        // Drain output buffers
-        drainEncoder(codec, muxer, isEndOfStream)
+        // If no PCM data at all (e.g., EOS-only signal), still submit the flag
+        if (length == 0 && isEndOfStream) {
+            val inputBufferIndex = codec.dequeueInputBuffer(10_000)
+            if (inputBufferIndex >= 0) {
+                val inputBuffer = codec.getInputBuffer(inputBufferIndex)
+                inputBuffer?.clear()
+                codec.queueInputBuffer(inputBufferIndex, 0, 0, presentationTimeUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                drainEncoder(codec, muxer, true)
+            }
+        }
     }
 
     private fun drainEncoder(codec: MediaCodec, muxer: MediaMuxer, isEndOfStream: Boolean) {
