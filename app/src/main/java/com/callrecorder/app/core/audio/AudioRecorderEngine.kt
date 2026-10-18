@@ -86,6 +86,8 @@ class AudioRecorderEngine(
     private var audioManager: AudioManager? = null
     private var originalSpeakerphoneState: Boolean = false
     private var preRollBuffer: CircularByteBuffer? = null
+    private var echoCanceler: AcousticEchoCanceler? = null
+    private var noiseSuppressor: NoiseSuppressor? = null
     private var recordingStartTime = 0L
     private var callAnswerTime = 0L
 
@@ -163,18 +165,23 @@ class AudioRecorderEngine(
         // Test sample rates: 44100 Hz first (universal AAC standard), fallback to 16000 Hz
         val sampleRatesToTry = intArrayOf(44100, 16000)
 
-        // Prioritize VOICE_CALL for true bi-directional telephony audio (OEM-supported).
-        // Fall back progressively: VOICE_COMMUNICATION (VoIP-style with AEC), UNPROCESSED,
-        // VOICE_RECOGNITION, MIC, DEFAULT.
-        @Suppress("DEPRECATION")
-        val audioSources = intArrayOf(
-            MediaRecorder.AudioSource.VOICE_CALL,          // Raw uplink+downlink (OEM-specific)
-            MediaRecorder.AudioSource.VOICE_COMMUNICATION, // VoIP mic (speakerphone trick)
-            MediaRecorder.AudioSource.UNPROCESSED,         // Raw mic, no DSP pipeline (API 24+)
-            MediaRecorder.AudioSource.VOICE_RECOGNITION,
-            MediaRecorder.AudioSource.MIC,
-            MediaRecorder.AudioSource.DEFAULT
-        )
+        // Source priority for two-way call recording via speakerphone boost:
+        // 1. MIC: Universal, guaranteed unmuted, captures both local speaker & remote party acoustically.
+        // 2. UNPROCESSED (API 24+): Direct microphone capture without DSP echo-cancellation.
+        // 3. VOICE_RECOGNITION: Clean speech capture with minimal filtering.
+        // 4. VOICE_COMMUNICATION: VoIP source.
+        // 5. DEFAULT: System fallback.
+        // Note: VOICE_CALL is intentionally omitted because on unrooted Android 10-15 (API 29-35),
+        // AOSP AudioPolicyManager requires privileged CAPTURE_AUDIO_OUTPUT permission and
+        // delivers silent zero-filled buffers (0x00) if accessed by standard apps.
+        val audioSources = mutableListOf<Int>()
+        audioSources.add(MediaRecorder.AudioSource.MIC)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            audioSources.add(MediaRecorder.AudioSource.UNPROCESSED)
+        }
+        audioSources.add(MediaRecorder.AudioSource.VOICE_RECOGNITION)
+        audioSources.add(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+        audioSources.add(MediaRecorder.AudioSource.DEFAULT)
 
         var record: AudioRecord? = null
         var activeSampleRate = 44100
@@ -223,6 +230,7 @@ class AudioRecorderEngine(
                 val aec = AcousticEchoCanceler.create(sessionId)
                 if (aec != null) {
                     aec.enabled = false
+                    echoCanceler = aec
                     Log.i(TAG, "AcousticEchoCanceler disabled on session $sessionId")
                 }
             }
@@ -234,6 +242,7 @@ class AudioRecorderEngine(
                 val ns = NoiseSuppressor.create(sessionId)
                 if (ns != null) {
                     ns.enabled = false
+                    noiseSuppressor = ns
                     Log.i(TAG, "NoiseSuppressor disabled on session $sessionId")
                 }
             }
@@ -391,6 +400,16 @@ class AudioRecorderEngine(
             audioEncoder?.stop()
         } catch (_: Exception) {}
         audioEncoder = null
+
+        try {
+            echoCanceler?.release()
+        } catch (_: Exception) {}
+        echoCanceler = null
+
+        try {
+            noiseSuppressor?.release()
+        } catch (_: Exception) {}
+        noiseSuppressor = null
 
         cleanupAudioRouting()
 

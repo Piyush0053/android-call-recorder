@@ -63,13 +63,20 @@ class AudioEncoder(
         val bytesPerSample = 2 * channelCount
 
         var offset = 0
+        var retries = 0
         while (offset < length) {
             val inputBufferIndex = codec.dequeueInputBuffer(10_000)
             if (inputBufferIndex < 0) {
                 // Codec not ready yet — drain output and retry next iteration
                 drainEncoder(codec, muxer, false)
+                retries++
+                if (retries > 50) {
+                    Log.w(TAG, "dequeueInputBuffer timed out after 50 attempts; dropping remaining chunk")
+                    break
+                }
                 continue
             }
+            retries = 0
 
             val inputBuffer = codec.getInputBuffer(inputBufferIndex) ?: break
             inputBuffer.clear()
@@ -95,21 +102,26 @@ class AudioEncoder(
             drainEncoder(codec, muxer, isLastChunk && isEndOfStream)
         }
 
-        // If no PCM data at all (e.g., EOS-only signal), still submit the flag
+        // If no PCM data at all (e.g., EOS-only signal), submit EOS with retry
         if (length == 0 && isEndOfStream) {
-            val inputBufferIndex = codec.dequeueInputBuffer(10_000)
-            if (inputBufferIndex >= 0) {
-                val inputBuffer = codec.getInputBuffer(inputBufferIndex)
-                inputBuffer?.clear()
-                codec.queueInputBuffer(inputBufferIndex, 0, 0, presentationTimeUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                drainEncoder(codec, muxer, true)
+            for (retry in 0..10) {
+                val inputBufferIndex = codec.dequeueInputBuffer(10_000)
+                if (inputBufferIndex >= 0) {
+                    val inputBuffer = codec.getInputBuffer(inputBufferIndex)
+                    inputBuffer?.clear()
+                    codec.queueInputBuffer(inputBufferIndex, 0, 0, presentationTimeUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                    drainEncoder(codec, muxer, true)
+                    break
+                } else {
+                    drainEncoder(codec, muxer, false)
+                }
             }
         }
     }
 
     private fun drainEncoder(codec: MediaCodec, muxer: MediaMuxer, isEndOfStream: Boolean) {
         val bufferInfo = MediaCodec.BufferInfo()
-        val timeout = if (isEndOfStream) 50_000L else 0L
+        val timeout = if (isEndOfStream) 50_000L else 10_000L
 
         while (true) {
             val outputBufferIndex = codec.dequeueOutputBuffer(bufferInfo, timeout)
